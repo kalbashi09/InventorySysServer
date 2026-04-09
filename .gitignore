@@ -1,0 +1,8 @@
+/bin/
+/obj/
+/Debug/
+
+/Release/
+/Publish/
+
+/Migrations/
