@@ -57,5 +57,11 @@ public class InventoryDbContext : DbContext
             .HasOne(c => c.User)
             .WithMany(u => u.Categories)
             .HasForeignKey(c => c.UserId);
+
+        modelBuilder.Entity<InventoryItem>()
+        .HasOne(i => i.UserCategory)
+        .WithMany(c => c.Items) // Assuming UserCategory has: ICollection<InventoryItem> Items
+        .HasForeignKey(i => i.UserCategoryId)
+        .OnDelete(DeleteBehavior.Restrict); // Prevents accidental deletion of categories with items
     }
 }

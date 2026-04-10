@@ -5,7 +5,7 @@ using Services;
 namespace Controllers;
 
 [ApiController]
-[Route("api/[controller]")] // This makes the URL: api/UserStartup
+[Route("api/[controller]")]
 public class UserStartupController : ControllerBase
 {
     private readonly UserStartupService _startupService;
@@ -15,32 +15,66 @@ public class UserStartupController : ControllerBase
         _startupService = startupService;
     }
 
+    // STEP 1: Register the Employer Account
     [HttpPost("initialize")]
     public async Task<IActionResult> Initialize([FromBody] UserStartupDto request)
     {
-        // 1. Validation: "Tell it like it is"
-        if (string.IsNullOrEmpty(request.UserId)) 
-            return BadRequest("UserId is required.");
+        // Validation: No sugar-coating. If it's empty, it's a fail.
+        if (string.IsNullOrEmpty(request.UserId) || string.IsNullOrEmpty(request.Email)) 
+            return BadRequest("UserId and Email are required.");
 
-        // FullName is now REQUIRED for our AppUser entity
         if (string.IsNullOrEmpty(request.FullName)) 
             return BadRequest("Full Name is required.");
 
         if (string.IsNullOrEmpty(request.Password) || request.Password.Length < 8)
             return BadRequest("Password must be at least 8 characters long.");
 
-        // 2. Pass everything to the service
-        // Notice we are passing FullName, Birthdate, and SpecialCode now!
+        // Call Part 1 of the Service
         var result = await _startupService.InitializeNewUser(
             request.UserId, 
             request.Email, 
             request.Password,
-            request.FullName,     // Pass from DTO
-            request.Birthdate,    // Pass from DTO
-            request.SpecialCode,  // Pass from DTO
-            request.Categories
+            request.FullName,
+            request.Birthdate
         );
 
-        return Ok(new { message = result });
+        if (!result.Success) return BadRequest(result.Message);
+
+        return Ok(result);
+    }
+
+    // STEP 2: The "Setup Wizard" for Categories
+    [HttpPost("setup-categories")]
+    public async Task<IActionResult> SetupCategories([FromBody] CategorySetupRequestDto request)
+    {
+        if (string.IsNullOrEmpty(request.UserId)) 
+            return BadRequest("UserId is required to link categories.");
+
+        if (request.Categories == null || !request.Categories.Any())
+            return BadRequest("Please select at least one category.");
+
+        var result = await _startupService.SetupShopCategories(request.UserId, request.Categories);
+
+        if (!result.Success) return BadRequest(result.Message);
+
+        return Ok(result);
+    }
+
+    // EMPLOYEE JOIN: Remains a single-step process
+    [HttpPost("join-employee")]
+    public async Task<IActionResult> JoinEmployee([FromBody] EmployeeJoinDto request)
+    {
+        if (string.IsNullOrEmpty(request.SpecialCode)) 
+            return BadRequest("Employer Special Code is required.");
+
+        try
+        {
+            var result = await _startupService.OnboardEmployee(request);
+            return Ok(new { message = result });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 }

@@ -11,6 +11,14 @@ namespace Models.Entities
         // The "Join Code" generated for Employers
         public string? SpecialCode { get; set; }
 
+        // The date the account was created (Essential for your GET filter)
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Good for "Senior Architect" auditing
+        public DateTime? UpdatedAt { get; set; }
+        
+        public DateTime? LastLogin { get; set; } // For tracking user activity, can be used for analytics or license management
+
         // --- MULTI-TENANT LOGIC ---
 
         // If this is NULL, the user is an Employer (The Boss)

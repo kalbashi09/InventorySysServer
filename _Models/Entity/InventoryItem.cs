@@ -19,11 +19,12 @@ namespace Models.Entities
 
         public string ItemName { get; set; } = string.Empty; 
         public string BatchName { get; set; } = string.Empty; 
-        public string QuantityType { get; set; } = string.Empty; // e.g., grams, liters
+        public string QuantityType { get; set; } = string.Empty; // grams, liters
         public decimal Quantity { get; set; }
         
         public DateTime StoredDate { get; set; } = DateTime.UtcNow;
         public DateTime? ExpiryDate { get; set; } 
+        public bool IsExpired => ExpiryDate.HasValue && ExpiryDate.Value < DateTime.UtcNow;
         
         public bool InStock { get; set; } = true;
     }

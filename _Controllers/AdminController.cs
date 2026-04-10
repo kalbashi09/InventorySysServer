@@ -1,35 +1,32 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration; // Added for IConfiguration
 using Services;
+using Models.dto;
 
 namespace Controllers;
 
 [ApiController]
-[Route("api/admin")]
+[Route("api/admin")] // Everything here stays behind the secret key
 public class AdminController : ControllerBase
 {
     private readonly LicenseService _licenseService;
-    // In a real app, keep this in appsettings.json or an Environment Variable
-    private const string AdminApiKey = "Talisay_Admin_Secret_2026_!@#"; 
+    private readonly IConfiguration _config;
 
-    public AdminController(LicenseService licenseService)
+    public AdminController(LicenseService licenseService, IConfiguration config)
     {
         _licenseService = licenseService;
+        _config = config;
     }
 
-    [HttpPatch("activate-pl/{userId}")]
-    public async Task<IActionResult> ActivatePermanent(string userId, [FromHeader(Name = "X-Admin-Key")] string providedKey)
+    [HttpPatch("activate-permanent")]
+    public async Task<IActionResult> ActivatePermanent([FromBody] AdminLicenseUpdateDto dto, [FromHeader(Name = "X-Admin-Key")] string providedKey)
     {
-        // 1. Tell it like it is: Security check
-        if (providedKey != AdminApiKey)
-        {
-            return Unauthorized("Invalid Admin Key. Access Denied.");
-        }
+        var adminApiKey = _config["AdminSettings:SecretKey"];
+        if (providedKey != adminApiKey) return Unauthorized("Access Denied.");
 
-        // 2. Process the upgrade
-        var result = await _licenseService.ActivatePermanentLicense(userId);
+        var result = await _licenseService.ActivatePermanentLicense(dto.UserId);
+        if (!result) return NotFound("User/License not found.");
 
-        if (!result) return NotFound("User not found or License row missing.");
-
-        return Ok(new { message = $"User {userId} is now a Permanent Member!" });
+        return Ok(new { message = $"User {dto.UserId} upgraded to Permanent." });
     }
 }

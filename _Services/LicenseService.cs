@@ -1,6 +1,6 @@
 using Models.Entities;
 using Microsoft.EntityFrameworkCore;
-using Data; // Replace with your actual Namespace for DbContext
+using Data;
 
 namespace Services;
 
@@ -13,34 +13,47 @@ public class LicenseService
         _context = context;
     }
 
-    // 1. TRIAL ACTIVATION (Self-Service)
+    // HELPER: Direct all license traffic to the "Boss"
+    private async Task<string> GetMasterOwnerId(string userId)
+    {
+        var user = await _context.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == userId);
+
+        if (user == null) throw new KeyNotFoundException("User not found.");
+
+        // If Employee, return Boss's ID. If Boss, return own ID.
+        return user.EmployerId ?? user.Id;
+    }
+
+    // 1. TRIAL ACTIVATION (Redirected to Boss)
     public async Task<string> ActivateTrial(string userId, string hwid)
     {
-        var license = await _context.UserLicenses.FirstOrDefaultAsync(l => l.UserId == userId);
+        string ownerId = await GetMasterOwnerId(userId);
 
-        if (license == null) return "User license record not found.";
-        
-        // Tell it like it is: Security Check
-        if (license.TlUsed) return "Trial has already been used on this account.";
+        var license = await _context.UserLicenses.FirstOrDefaultAsync(l => l.UserId == ownerId);
+        if (license == null) return "Shop license record not found.";
 
-        // Check if this Hardware ID has been used by ANYONE else
+        if (license.PlUsed) return "Permanent License is already active for this shop.";
+        if (license.TlUsed) return "Trial has already been used for this shop.";
+
         var hwidExists = await _context.UserLicenses.AnyAsync(l => l.HardwareId == hwid && l.TlUsed);
         if (hwidExists) return "This device has already exhausted its trial period.";
 
-        // Activate
         license.TlUsed = true;
         license.TlUsedDate = DateTime.UtcNow;
         license.HardwareId = hwid;
 
         await _context.SaveChangesAsync();
-        return "Success: 15-day trial started.";
+        return "Success: 15-day trial started for the whole shop.";
     }
 
-    // 2. PERMANENT ACTIVATION (Admin Backdoor)
+    // 2. PERMANENT ACTIVATION (Admin Backdoor redirected to Boss)
     public async Task<bool> ActivatePermanentLicense(string userId)
     {
-        var license = await _context.UserLicenses.FirstOrDefaultAsync(l => l.UserId == userId);
+        string ownerId = await GetMasterOwnerId(userId);
 
+        var license = await _context.UserLicenses.FirstOrDefaultAsync(l => l.UserId == ownerId);
         if (license == null) return false;
 
         license.PlUsed = true;
@@ -50,16 +63,44 @@ public class LicenseService
         return true;
     }
 
-    // 3. INITIALIZATION (Call this in your User Registration Service)
-    public async Task InitializeNewUserLicense(string userId)
+    // 3. CAN ACCESS CHECK (Crucial for Middleware)
+    public async Task<bool> CanAccessAccount(string userId)
     {
+        string ownerId = await GetMasterOwnerId(userId);
+
+        var license = await _context.UserLicenses
+            .AsNoTracking()
+            .FirstOrDefaultAsync(l => l.UserId == ownerId);
+
+        if (license == null) return false;
+
+        // Permanent access always wins
+        if (license.PlUsed) return true;
+
+        // Trial access logic
+        if (license.TlUsed && license.TlUsedDate.HasValue)
+        {
+            var expiryDate = license.TlUsedDate.Value.AddDays(15);
+            return DateTime.UtcNow <= expiryDate;
+        }
+
+        return false;
+    }
+
+    // 4. INITIALIZATION (Required for UserStartupService)
+    public void InitializeNewUserLicense(string userId)
+    {
+        // Note: We don't use MasterOwnerId here because this is only 
+        // called during the initial Employer registration.
         var newLicense = new UserLicense
         {
             Id = Guid.NewGuid(),
-            UserId = userId
+            UserId = userId,
+            TlUsed = false,
+            PlUsed = false
         };
 
         _context.UserLicenses.Add(newLicense);
-        await _context.SaveChangesAsync();
+        // We omit SaveChanges here so it happens in the StartupService's transaction.
     }
 }

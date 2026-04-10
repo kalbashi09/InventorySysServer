@@ -1,8 +1,4 @@
-
 using System.Text.Json.Serialization;
-
-// ... inside the DTO ...
-
 
 namespace Models.dto;
 
@@ -13,8 +9,12 @@ public class InventoryDisplayDto
     public string BatchLocation { get; set; } = string.Empty; // "Fridge Rack 1"
     public string QuantityDisplay { get; set; } = string.Empty; // "2.5 Liters"
     public string CategoryName { get; set; } = string.Empty;
-    public string TypeName { get; set; } = string.Empty; // "Food", "Material", etc.
+    public string TypeName { get; set; } = string.Empty; 
+
+    // THE MISSING LINK:
+    // This allows your Avalonia UI to bind to a "IsExpired" property
+    public bool IsExpired { get; set; } 
 
     [JsonIgnore]
-    public decimal Quantity { get; set; } // This is the raw quantity for internal use, not for display
+    public decimal Quantity { get; set; } 
 }

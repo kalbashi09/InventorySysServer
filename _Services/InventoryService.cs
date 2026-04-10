@@ -1,86 +1,53 @@
-using Microsoft.EntityFrameworkCore; // Required for FirstOrDefaultAsync
-using Data;          // Matches your InventoryDbContext namespace
-using Models.Entities; // Matches your InventoryItem namespace
-using Models.dto;      // Matches your MainDto namespace    
+using Data;
+using Models.Entities;
+using Models.dto;
 
 namespace Services
 {
     public class InventoryService
     {
         private readonly InventoryDbContext _db;
+        private readonly NotificationService _notif; // Add this
 
-        // CONSTRUCTION: This is where we "Inject" the DB Manager
-        public InventoryService(InventoryDbContext db)
+        public InventoryService(InventoryDbContext db, NotificationService notif)
         {
             _db = db;
+            _notif = notif; // Inject the notification service
         }
 
-        public async Task<string> RegisterNewBatch(InventoryItem newItem)
+        private async Task<string> GetMasterOwnerId(string userId)
         {
-            // 1. Check for existing active batch with the same name/location
-            // We use _db (the manager) to look into the InventoryItems table
-            var existingBatch = await _db.InventoryItems
-                .FirstOrDefaultAsync(x => x.BatchName == newItem.BatchName && x.InStock == true);
-
-            if (existingBatch != null)
-            {
-                return "Conflict: This Batch Name is still in stock. Please clear it first!";
-            }
-
-            // 2. If existing batch is Out of Stock, or doesn't exist, proceed
-            _db.InventoryItems.Add(newItem);
-            
-            // This pushes the changes to PostgreSQL
-            await _db.SaveChangesAsync(); 
-            
-            return "Success: Batch Registered.";
+            var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null) throw new KeyNotFoundException("User not found.");
+            return user.EmployerId ?? user.Id;
         }
 
-        public async Task<List<InventoryItem>> GetUserInventory(string currentUserId)
+        public async Task<ServiceResult<InventoryItem>> RegisterScannedItem(InventoryEntryDto entry)
         {
-            return await _db.InventoryItems
-                .Where(x => x.UserId == currentUserId && x.InStock == true)
-                .ToListAsync();
-        }
+            if (await _db.InventoryItems.AnyAsync(i => i.Id == entry.Id))
+                return ServiceResult<InventoryItem>.Fail("Error: This QR code is already registered.");
 
-        public async Task<string> RegisterScannedItem(InventoryEntryDto entry)
-        {
-            // 1. Check if the QR code is already in use
-            var existingItem = await _db.InventoryItems.AnyAsync(i => i.Id == entry.Id);
-            if (existingItem) 
-                return "Error: This QR code is already registered to another item.";
+            string masterId = await GetMasterOwnerId(entry.UserId);
 
-            // 2. Check if the User exists
-            var userExists = await _db.Users.AnyAsync(u => u.Id == entry.UserId);
-            if (!userExists) 
-                return "Error: User not found.";
-
-            // 3. Validate that the category EXISTS and BELONGS to the user
-            // We combine both checks into one efficient query
             var categoryValid = await _db.UserCategories
-                .AnyAsync(c => c.Id == entry.UserCategoryId && c.UserId == entry.UserId);
-                
+                .AnyAsync(c => c.Id == entry.UserCategoryId && c.UserId == masterId);
+                    
             if (!categoryValid) 
-                return "Error: Category does not exist or does not belong to this user.";
+                return ServiceResult<InventoryItem>.Fail("Error: Category does not exist in this shop's inventory.");
 
-            // 3. Create the Entity
             var newItem = new InventoryItem
             {
                 Id = entry.Id,
-                UserId = entry.UserId,
+                UserId = masterId,
                 UserCategoryId = entry.UserCategoryId,
-                InventoryTypeId = entry.InventoryTypeId, // Don't forget this!
+                InventoryTypeId = entry.InventoryTypeId,
                 ItemName = entry.ItemName,
                 BatchName = entry.BatchName,
                 QuantityType = entry.QuantityType,
                 Quantity = entry.Quantity,
-
-                // THE CLEAN FIX: 
-                // If it has a value, make it UTC. If not, just let it be null.
                 ExpiryDate = entry.ExpiryDate.HasValue 
                     ? DateTime.SpecifyKind(entry.ExpiryDate.Value, DateTimeKind.Utc) 
                     : null, 
-
                 StoredDate = DateTime.UtcNow,
                 InStock = true
             };
@@ -88,42 +55,106 @@ namespace Services
             _db.InventoryItems.Add(newItem);
             await _db.SaveChangesAsync();
 
-            return $"Success: {entry.ItemName} registered to Category {entry.UserCategoryId}!";
+            await _db.Entry(newItem).Reference(i => i.UserCategory).LoadAsync();
+            await _db.Entry(newItem).Reference(i => i.InventoryType).LoadAsync();
+
+            // 🔥 TRIGGER: Run the alert logic in the background so the user doesn't wait
+            _ = Task.Run(() => _notif.ProcessInventoryAlerts(newItem.Id));
+
+            return ServiceResult<InventoryItem>.Ok(newItem, $"Success: {entry.ItemName} registered!");
+        } 
+
+        // --- ADD THESE BACK TO InventoryService.cs ---
+
+        public async Task<ServiceResult<List<InventoryDisplayDto>>> GetUserInventory(string userId, int? categoryId = null, int? typeId = null)
+        {
+            try 
+            {
+                string masterId = await GetMasterOwnerId(userId);
+
+                var query = _db.InventoryItems
+                    .Include(i => i.UserCategory)
+                    .Include(i => i.InventoryType)
+                    .Where(i => i.UserId == masterId && i.InStock == true)
+                    .AsQueryable();
+
+                if (categoryId.HasValue) query = query.Where(i => i.UserCategoryId == categoryId.Value);
+                if (typeId.HasValue) query = query.Where(i => i.InventoryTypeId == typeId.Value);
+
+                var list = await query.Select(i => new InventoryDisplayDto
+                {
+                    ItemId = i.Id,
+                    ItemName = i.ItemName, 
+                    QuantityDisplay = $"{i.Quantity} {i.QuantityType}",
+                    CategoryName = i.UserCategory.Name,
+                    TypeName = i.InventoryType.TypeName,
+                    BatchLocation = i.BatchName,
+                    IsExpired = i.ExpiryDate.HasValue && i.ExpiryDate.Value < DateTime.UtcNow
+                }).ToListAsync();
+
+                return ServiceResult<List<InventoryDisplayDto>>.Ok(list);
+            }
+            catch (Exception ex)
+            {
+                return ServiceResult<List<InventoryDisplayDto>>.Fail($"Error fetching inventory: {ex.Message}");
+            }
         }
 
-        public async Task<List<InventoryDisplayDto>> GetUserInventory(string userId, int? categoryId = null, int? typeId = null)
+        public async Task<ServiceResult<List<InventoryDisplayDto>>> GetExpiredStock(string userId)
         {
-            var query = _db.InventoryItems
-                .Include(i => i.UserCategory)
-                .Include(i => i.InventoryType)
-                .Where(i => i.UserId == userId)
-                .AsQueryable();
-
-            // 1. Filter by UserCategory (Pantry, Garage, etc.)
-            if (categoryId.HasValue)
+            try
             {
-                query = query.Where(i => i.UserCategoryId == categoryId.Value);
+                string masterId = await GetMasterOwnerId(userId);
+                var now = DateTime.UtcNow;
+
+                var list = await _db.InventoryItems
+                    .Include(i => i.UserCategory)
+                    .Include(i => i.InventoryType)
+                    .Where(i => i.UserId == masterId && i.InStock == true)
+                    .Where(i => i.ExpiryDate.HasValue && i.ExpiryDate.Value < now)
+                    .OrderBy(i => i.ExpiryDate)
+                    .Select(i => new InventoryDisplayDto
+                    {
+                        ItemId = i.Id,
+                        ItemName = i.ItemName,
+                        QuantityDisplay = $"{i.Quantity} {i.QuantityType}",
+                        CategoryName = i.UserCategory.Name,
+                        TypeName = i.InventoryType.TypeName,
+                        BatchLocation = i.BatchName,
+                        IsExpired = true 
+                    }).ToListAsync();
+
+                return ServiceResult<List<InventoryDisplayDto>>.Ok(list);
+            }
+            catch (Exception ex)
+            {
+                return ServiceResult<List<InventoryDisplayDto>>.Fail($"Error fetching expired stock: {ex.Message}");
+            }
+        }
+
+         public async Task PurgeItems(List<Guid> itemIds)
+        {
+            var items = await _db.InventoryItems
+                .Where(i => itemIds.Contains(i.Id))
+                .ToListAsync();
+
+            foreach (var item in items)
+            {
+                item.InStock = false; // "Remove" from shelf
             }
 
-            // 2. Filter by InventoryType (Food, Material, etc.)
-            if (typeId.HasValue)
-            {
-                query = query.Where(i => i.InventoryTypeId == typeId.Value);
-            }
+            await _db.SaveChangesAsync();
+        }
 
-            return await query.Select(i => new InventoryDisplayDto
-            {
-                ItemId = i.Id,
-                // CHANGE THIS: Use i.ItemName for the display, not BatchName
-                ItemName = i.ItemName, 
-                QuantityDisplay = $"{i.Quantity} {i.QuantityType}",
-                CategoryName = i.UserCategory.Name,
-                TypeName = i.InventoryType.TypeName,
-                // PRO TIP: Add BatchName to your DTO so you can see BOTH!
-                BatchLocation = i.BatchName 
-            }).ToListAsync();
+        public async Task<bool> IsUserAdmin(string userId)
+        {
+            var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+            // If EmployerId is null, it means they ARE the boss (Master Owner)
+            return user != null && string.IsNullOrEmpty(user.EmployerId);
         }
     }
+}
 
     
-}
+       
+        

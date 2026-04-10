@@ -1,5 +1,6 @@
 using Data;
 using Models.Entities;
+using Models.dto; // Ensure this is present
 using Microsoft.EntityFrameworkCore;
 
 namespace Services;
@@ -7,86 +8,102 @@ namespace Services;
 public class UserStartupService
 {
     private readonly InventoryDbContext _db;
-    private readonly AuthService _auth; // Injecting your new AuthService
+    private readonly AuthService _auth;
+    private readonly LicenseService _license;
 
-    public async Task<string> InitializeNewUser(
-    string userId, 
-    string email, 
-    string plainPassword, 
-    string fullName,
-    DateTime? birthdate,
-    string? specialCode, 
-    List<string> selectedCategories)
+    public UserStartupService(InventoryDbContext db, AuthService auth, LicenseService license)
     {
-        var userExists = await _db.Users.AnyAsync(u => u.Id == userId);
-        if (userExists) return "User already exists.";
+        _db = db;
+        _auth = auth;
+        _license = license;
+    }
 
-        string hashedPassword = _auth.Register(plainPassword);
-        string? finalSpecialCode = null;
-        string? employerId = null; // This is the actual link!
+    // --- STEP 1: CREATE ACCOUNT ONLY ---
+    public async Task<ServiceResult<string>> InitializeNewUser(
+        string userId, 
+        string email, 
+        string plainPassword, 
+        string fullName,
+        DateTime? birthdate)
+    {
+        // 1. Logic Check
+        var userExists = await _db.Users.AnyAsync(u => u.Email == email || u.Id == userId);
+        if (userExists) return ServiceResult<string>.Fail("User already exists.");
 
-        if (!string.IsNullOrEmpty(specialCode))
-        {
-            // --- EMPLOYEE LOGIC ---
-            // 1. Find the Employer who owns this code
-            var employer = await _db.Users
-                .FirstOrDefaultAsync(u => u.SpecialCode == specialCode);
-
-            if (employer == null) return "Invalid Employer Code.";
-
-            // 2. Set the link
-            employerId = employer.Id; 
-            finalSpecialCode = specialCode; 
-        }
-        else
-        {
-            // --- EMPLOYER LOGIC ---
-            finalSpecialCode = GenerateUniqueCode();
-            // EmployerId remains null because they ARE the boss
-        }
-
-        // 3. Create the User with the Link
+        // 2. Creation
         var user = new AppUser 
         { 
             Id = userId, 
             Email = email, 
-            PasswordHash = hashedPassword,
+            PasswordHash = _auth.Register(plainPassword),
             FullName = fullName,
             Birthdate = birthdate,
-            SpecialCode = finalSpecialCode,
-            EmployerId = employerId // The "Bridge" established!
+            SpecialCode = GenerateUniqueCode(),
+            CreatedAt = DateTime.UtcNow 
         };
+
         _db.Users.Add(user);
-
-        // 4. License & Categories (Only for Employers)
-        if (employerId == null) 
-        {
-            _db.UserLicenses.Add(new UserLicense { Id = Guid.NewGuid(), UserId = userId });
-
-            foreach (var catName in selectedCategories)
-            {
-                int defaultType = catName.ToLower().Contains("ingredient") || catName.ToLower().Contains("food") ? 1 : 2;
-                _db.UserCategories.Add(new UserCategory
-                {
-                    UserId = userId,
-                    Name = catName,
-                    DefaultInventoryTypeId = defaultType,
-                    CommonItems = new List<string>()
-                });
-            }
-        }
+        
+        // Initialize License immediately so they have a trial
+        _license.InitializeNewUserLicense(userId);
 
         await _db.SaveChangesAsync();
         
-        return employerId != null 
-            ? $"Employee linked to {specialCode}!" 
-            : $"Employer created! Code: {finalSpecialCode}";
+        return ServiceResult<string>.Ok(user.SpecialCode!, "Account created! Now set up your shop.");
     }
 
-    // Simple unique code generator
+    // --- STEP 2: SETUP CATEGORIES (Separate Request) ---
+    public async Task<ServiceResult<bool>> SetupShopCategories(string userId, List<string> selectedCategories)
+    {
+        var user = await _db.Users.AnyAsync(u => u.Id == userId);
+        if (!user) return ServiceResult<bool>.Fail("User not found.");
+
+        foreach (var catName in selectedCategories)
+        {
+            // Innovation: Auto-assign type based on name keywords
+            int defaultType = catName.ToLower().Contains("ingredient") || 
+                              catName.ToLower().Contains("food") ? 1 : 2;
+
+            _db.UserCategories.Add(new UserCategory
+            {
+                UserId = userId,
+                Name = catName,
+                DefaultInventoryTypeId = defaultType,
+                CommonItems = new List<string>()
+            });
+        }
+
+        await _db.SaveChangesAsync();
+        return ServiceResult<bool>.Ok(true, "Shop setup complete!");
+    }
+
+    public async Task<string> OnboardEmployee(EmployeeJoinDto dto)
+    {
+        var employer = await _db.Users
+            .FirstOrDefaultAsync(u => u.SpecialCode == dto.SpecialCode && u.EmployerId == null);
+
+        if (employer == null) throw new Exception("Employer not found or invalid code.");
+
+        var employee = new AppUser
+        {
+            Id = Guid.NewGuid().ToString(),
+            FullName = dto.FullName,
+            Email = dto.Email,
+            PasswordHash = _auth.Register(dto.Password), 
+            SpecialCode = dto.SpecialCode,
+            EmployerId = employer.Id,
+            Birthdate = dto.Birthdate,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _db.Users.Add(employee);
+        await _db.SaveChangesAsync();
+        
+        return $"Employee Onboarded to {employer.FullName}'s cluster.";
+    }
+
     private string GenerateUniqueCode()
     {
-        // Generates something like: ABC1-23DE
         return Guid.NewGuid().ToString("N").Substring(0, 8).ToUpper();
     }
 }
