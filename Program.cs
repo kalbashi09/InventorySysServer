@@ -25,6 +25,10 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(); 
 
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents()
+    .AddInteractiveWebAssemblyComponents();
+
 // 5. CORS - Mandatory for your Tunnel and Mobile connections
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAll", policy => 
@@ -54,5 +58,5 @@ app.UseCors("AllowAll");
 app.UseHttpsRedirection(); // Standard practice
 app.UseAuthorization();
 app.MapControllers();
-
+   
 app.Run();

@@ -1,0 +1,8 @@
+Invoke-WebRequest -Uri https://aka.ms/TunnelsCliDownload/win-x64 -OutFile devtunnel.exe
+
+.\devtunnel.exe user login
+
+.\devtunnel.exe create inventory-dev --allow-anonymous
+.\devtunnel.exe port create inventory-dev -p 5001 --protocol https
+
+.\devtunnel.exe host inventory-dev
