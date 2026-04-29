@@ -25,20 +25,26 @@ public class LoginService
         if (user == null) 
             return ServiceResult<LoginResponseDto>.Fail("Invalid email or password.");
 
-        // --- INNOVATION: Verify the hash instead of comparing strings ---
-        // This takes your plain text 'request.Password' and checks it against 'user.PasswordHash'
         bool isPasswordCorrect = _auth.Login(request.Password, user.PasswordHash);
 
         if (!isPasswordCorrect)
-        {
             return ServiceResult<LoginResponseDto>.Fail("Invalid email or password.");
-        }
+
+        // --- LOGIC: Identify whose categories we are checking ---
+        // If EmployerId is null, use user.Id (The Boss). 
+        // If not null, use user.EmployerId (The Employee's Boss).
+        string targetOwnerId = user.EmployerId ?? user.Id;
+
+        // Use .AnyAsync() for high performance
+        bool categoriesExist = await _db.UserCategories
+            .AnyAsync(c => c.UserId == targetOwnerId);
 
         var data = new LoginResponseDto
         {
             UserId = user.Id,
             FullName = user.FullName,
             EmployerId = user.EmployerId,
+            HasSetupCategories = categoriesExist, // Populate your new flag
             Message = "Login successful!"
         };
 
